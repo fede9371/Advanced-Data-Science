@@ -1,0 +1,1908 @@
+---
+title: Studio di una rete di voli nei primi tre mesi del 2020 e analisi dell'impatto del Covid-19
+author: "Federica De Martin"
+date: "15/02/2021"
+output:
+  ioslides_presentation:
+    css: scrollable_slides.css
+  beamer_presentation: default
+  slidy_presentation: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r include=FALSE}
+library(readr)
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(tidyverse)
+library(lubridate)
+library(jsonlite)
+library(scales)
+library(ggrepel)
+library(waffle)
+library(plotly)
+library(htmlwidgets)
+library(hrbrthemes)
+library(dygraphs)
+library(xts)   
+library(packcircles)
+library(viridis)
+library(ggiraph)
+library(leaflet)
+library(htmlwidgets)
+library(tidygraph)
+library(ggraph)
+library(maps)
+library(geosphere)
+library(igraph)
+library(network)
+library(CINNA)
+library(ITNr)
+library(viridis)
+library(poweRlaw)
+```
+
+## Obiettivo
+
+L'attuale epidemia di Covid-19 ha avuto un impatto senza precedenti nel settore del trasporto aereo.
+
+A partire da fine gennaio 2020 molte nazioni hanno cominciato a bloccare i voli provenienti da alcuni paesi dell'Asia e successivamente, con la diffusione della pandemia anche in Europa e in America, il blocco ha riguardato anche i voli in partenza. Di conseguenza l'aviazione è uno dei settori che più ha sofferto e soffre tutt'ora a causa delle conseguenze della pandemia. 
+
+Secondo ACI World ([Airport Council International](https://aci.aero/), organizzazione fondata del 1991 per rappresentare gli interessi degli aeroporti presso i governi) nel 2020 c'è stata una [riduzione del 64.2%](https://aci.aero/wp-content/uploads/2020/12/Advisory_Bulletin_The_impact_of_COVID_19_on_the_airport_business.pdf) del traffico passeggeri globale che corrisponde a oltre 6 miliardi di passeggeri in meno rispetto alle previsioni pre Covid-19.
+Secondo ciò che riporta [International Air Transport Association](https://www.iata.org/) le compagnie aeree hanno perso almeno 84,3 miliardi di dollari nel 2020 e nel 2021 ne perderanno almeno 15,8 miliardi.
+
+In questo studio è analizzata una rete di trasporto aereo con dati riferiti ai mesi di gennaio, febbraio e marzo 2020 e l'impatto che il Covid-19 ha avuto su tale rete.
+
+
+## Il dataset
+
+Il [dataset](https://zenodo.org/record/3901482#.X6Q052hKhPY) scelto è stato creato da Xavier Olive, Martin Strohmeier e Jannis Lübbe a partire da dati derivati dalla piattaforma [The OpenSky Network 2020](https://opensky-network.org) con l'obiettivo di illustrare la variazione del traffico aereo durante la pandemia Covid-19.
+
+Per ogni mese è stato creato un file .csv in cui ogni riga contiene le informazioni su un volo specifico.
+
+Ogni file .csv contiene i seguenti attributi:
+
+* callsign: l'identificativo del volo visualizzato sugli schermi ATC (di solito le prime tre lettere sono riservate a una compagnia aerea specifica: AFR per Air France, DLH per Lufthansa, ecc.);
+* number: numero commerciale del volo;
+* icao24: numero identificativo univoco del transponder (dispositivo radio che permette la comunicazione con gli addetti del controllo dello spazio aereo);
+* registration: il numero di coda dell'aeromobile (quando disponibile);
+* typecode: il tipo di modello del velivolo (quando disponibile);
+* origin: codice di quattro lettere che identifica l'aeroporto di origine (quando disponibile);
+* destination: codice di quattro lettere che identifica l'aeroporto di destinazione (quando disponibile);
+* firstseen: il timestamp del primo messaggio ricevuto dalla piattaforma OpenSky Network per il volo;
+* lastseen: il timestamp dell'ultimo messaggio ricevuto dalla piattaforma OpenSky Network per il volo;
+* day: giorno in cui è avvenuto il volo;
+* latitude_1, longitude_1, altitude_1: prima posizione rilevata del volo;
+* latitude_2, longitude_2, altitude_2: ultima posizione rilevata del volo.
+
+```{r eval=FALSE, include=FALSE}
+#dataset del mese di gennaio
+flights_jan=read_csv("flightlist_20200101_20200131.csv")
+#dataset del mese di febbraio
+flights_feb=read_csv("flightlist_20200201_20200229.csv")
+#dataset del mese di marzo
+flights_mar=read_csv("flightlist_20200301_20200331.csv")
+#unisco i tre dataset per ottenerne uno solo 
+flights_janfeb=rbind(flights_jan, flights_feb)
+#View(flights_janfeb)
+covid_flights=rbind(flights_janfeb, flights_mar)
+write_csv(covid_flights, "covid_flights.csv")
+
+
+```
+
+I tre dataset riferiti ai mesi di gennaio, febbraio e marzo 2020 sono stati uniti in un unico dataset chiamato **df_flight_covid**.
+```{r echo=FALSE}
+#dataset dei voli aerei da gennaio a marzo 2020
+df_flight_covid=read_csv("covid_flights.csv")
+df_flight_covid
+#View(df_flight_covid)
+```
+Il dataset risultante è formato da 3.921.109 entries e 16 attributi.
+
+## Pulizia del dataset
+
+*  Per l'analisi della rete dei voli è essenziale conoscere l'aeroporto di origine e di destinazione del volo. Nel dataset **df_flight_covid** ci sono 1.600.122 voli con origine e/o destinazione sconosciuta, questi voli non possono essere considerati per l'analisi e sono stati eliminati. Il nuovo dataset ottenuto ha 2.320.977 entries.
+```{r eval=FALSE, include=FALSE}
+n_origin_nan=df_flight_covid%>%count(is.na(origin))#  979292 con origine NA
+n_destination_nan=df_flight_covid%>%count(is.na(destination))# 772044 con destinazione NA
+n_nan=df_flight_covid%>%count(is.na(origin) | is.na(destination))# in totale sono da eliminare dal database 1600122 righe
+# il dataset pulito ha 2.320.987 entries
+df_first=df_flight_covid%>%filter(!is.na(origin) & !is.na(destination))
+# View(df_first)
+```
+*  Le variabili icao24, registration, typecode e number non sono d'interesse per l'analisi e possono essere eliminate.
+*  Le variabili firstseen e lastseen possono essere rappresentate dalla variabile day e quindi possono essere rimosse dal dataset.
+```{r eval=FALSE, include=FALSE}
+df_second=df_first%>%select(-icao24,-firstseen,-lastseen, -number, -registration, -typecode)
+# View(df_second)
+```
+*  Per identificare univocamente un volo è stato aggiunto un id.
+```{r eval=FALSE, include=FALSE}
+df_second%>%filter(is.na(day))# non ci sono giorni senza valore (NAN)
+#per identificare univocamente ogni riga è possibile aggiungere un id 
+df_third=df_second%>%mutate(id=row_number())
+df_clean=df_third%>%select(id,callsign:altitude_2)
+#View(df_clean)
+df_clean
+write_csv(df_clean, "covid_flights_clean_1.csv")
+
+```
+
+```{r include=FALSE}
+#dataset dei voli aerei da gennaio a marzo 2020
+covid_flights_clean=read_csv("covid_flights_clean_1.csv")
+#View(covid_flights_clean)
+```
+
+*  Gli attributi relativi a latitudine, longitudine e altitudine del primo e ultimo contatto non sono rilevanti e possono essere eliminati.
+```{r eval=FALSE, include=FALSE}
+#in questo dataset non mi interessa altitudine e longitudine e latitudine del primo e ultimo contatto quindi posso eliminare quelle colonne
+covid_flights_clean_2=covid_flights_clean%>%select(-altitude_1,-longitude_1, -altitude_2,- longitude_2, -latitude_1, -latitude_2)
+write_csv(covid_flights_clean_2, "covid_flights_clean.csv")
+```
+* Il dataset ottenuto ha 5 attributi: id, callsign, origin, destination e day.
+```{r echo=FALSE}
+covid_flights_clean=read_csv("covid_flights_clean.csv")
+#View(covid_flights_clean)
+covid_flights_clean
+```
+## Dataset aeroporti
+
+Per poter eseguire un'analisi sulla rete dei voli è necessario individuare la nazione (e il continente) dell'aeroporto di partenza e di arrivo del volo. 
+Gli aeroporti sono identificati dalla sigla ICAO che è un codice aeroportuale di quattro lettere.
+
+Queste informazioni possono essere ricavate a partire dalle sigle degli aeroporti di partenza e di arrivo se si ha a disposizione un dataset che mappa tali sigle nelle nazioni di appartenenza dell'aeroporto.
+
+Un dataset con queste informazioni non è scaricabile gratuitamente perciò è stato costruito manualmente a partire dalle informazioni in formato JSON presenti nel sito [datahub.io](https://datahub.io/core/airport-codes).
+```{r eval=FALSE, include=FALSE}
+#install.packages("jsonlite", repos="https://cran.rstudio.com/")
+library("jsonlite")
+
+json_file <- 'https://datahub.io/core/airport-codes/datapackage.json'
+json_data <- fromJSON(paste(readLines(json_file), collapse=""))
+
+# get list of all resources:
+print(json_data$resources$name)
+
+# print all tabular data(if exists any)
+for(i in 1:length(json_data$resources$datahub$type)){
+  if(json_data$resources$datahub$type[i]=='derived/csv'){
+    path_to_file = json_data$resources$path[i]
+    data <- read.csv(url(path_to_file))
+    print(data)
+  }
+}
+write_csv(data, "icao_codes.csv")
+```
+
+Il dataset **icao_codes** creato ha 57.421 entries ed è caratterizzato dai seguenti 12 attributi:
+
+*  ident: numero ICAO dell'aeroporto;
+*  type: tipo di aeroporto;
+*  name: nome dell'aeroporto;
+*  elevation_ft: altitudine;
+*  continent: continente dove si trova l'aeroporto;
+*  iso-country: codice iso della nazione;
+*  iso-region: codice iso della regione;
+*  municipality: comune;
+*  gps_code: codice gps;
+*  iata_code: codice iata aeroporto;
+*  local_code: codice locale;
+*  coordinates: coordinate aeroporto.
+
+Di questi attributi sono necessari solo: ident, continent, iso-country e coordinates.
+```{r echo=FALSE}
+icao_codes=read_csv("icao_codes.csv")
+icao_codes
+#View(icao_codes)
+```
+
+```{r eval=FALSE, include=FALSE}
+icao_codes_selezione=icao_codes%>%select(ident, continent, iso_country, coordinates)
+icao_codes_selezione%>%count(is.na(continent)) # per 28443 areoporti non si conosce il continente
+icao_codes_selezione%>%count(is.na(continent) & is.na(iso_country))# per ogni aeroporto si conosce almeno la nazione o il continente
+```
+## Dataset finale
+
+Attraverso il join tra il dataset dei voli **df_flight_covid** e quello degli aeroporti **icao_codes** è stato possibile ricavare la posizione degli aeroporti di partenza e di arrivo per ogni volo (stato e continente).
+```{r eval=FALSE, include=FALSE}
+#utilizzo un inner join in modo da tenere in considerazione solo i voli di cui conosco dove stanno gli aeroporti di origine e destinazione
+df_flights_airports_origin=inner_join(covid_flights_clean, icao_codes_selezione, by=c("origin"="ident"))%>%rename("continent_origin"="continent", "country_origin"="iso_country","coordinates_origin"="coordinates")
+#View(df_flights_airports_origin)
+df_flights_airports=inner_join(df_flights_airports_origin, icao_codes_selezione, by=c("destination"="ident"))%>%rename("continent_dest"="continent", "country_dest"="iso_country","coordinates_dest"="coordinates")
+#View(df_flights_airports)
+```
+
+Il dataset **df_flights_airports** ottenuto è formato da 2.315.324 entries e contiene i seguenti attributi:
+
+*  id: che identifica univocamente il volo;
+*  callsign: l'identificativo del volo visualizzato sugli schermi ATC (di solito le prime tre lettere sono riservate a una compagnia aerea: AFR per Air France, DLH per Lufthansa, ecc.);
+*  origin: identificativo ICAO dell'aeroporto di origine;
+*  destination: identificativo ICAO dell'aeroporto di destinazione;
+*  day: giorno del volo;
+*  continent_origin: sigla del continente di origine;
+*  country_origin: sigla della nazione di origine;
+*  coordinates_origin: coordinate dell'aeroporto di origine (latitudine e longitudine);
+*  continent_dest: sigla del continente di destinazione;
+*  country_dest: sigla della nazione di destinazione;
+*  coordinates_dest: coordinate dell'aeroporto di destinazione (latitudine e longitudine).
+
+```{r echo=FALSE}
+#write_csv(df_flights_airports, "df_flights_airports.csv")
+df_flights_airports=read_csv("df_flights_airports.csv")
+#View(df_flights_airports)
+df_flights_airports=df_flights_airports%>%mutate(continent_origin=replace_na(continent_origin,"NA"))
+df_flights_airports=df_flights_airports%>%mutate(continent_dest=replace_na(continent_dest, "NA"))
+#View(df_flights_airports)
+df_flights_airports
+```
+## Analisi esplorativa
+
+Come prima analisi è stata eseguita un'analisi esplorativa del dataset **df_flights_airports**.
+
+* Quanti aeroporti ci sono nel dataset?
+Nel dataset sono presenti 5.330 aeroporti su 17.678 aeroporti commerciali nel mondo (fonte: [Airport Council International](https://aci.aero/)).
+
+```{r echo=FALSE}
+#aeroporti di partenza
+a1=unique(df_flights_airports$origin)
+#length(unique(df_flights_airports$origin))# 2550 aeroporti di partenza
+a2=unique(df_flights_airports$destination)
+#length(unique(df_flights_airports$destination))# 4929 aeroporti di destinazione
+a3=union(a1,a2)
+sprintf("Numero di aeroporti presenti nel dataset: %s", length(unique(a3)))
+```
+* Quante nazioni ci sono nel dataset?
+Questo dataset copre i voli in 106 nazioni del mondo su 208 nazioni totali.
+
+```{r echo=FALSE}
+n1=unique(df_flights_airports$country_origin)
+# length(unique(df_flights_airports$country_origin))# 99 nazioni di partenza
+n2=unique(df_flights_airports$country_dest)
+# length(unique(df_flights_airports$country_dest))# 105 nazioni di arrivo
+n3=union(n1,n2)
+# length(unique(n3))#106 nazioni
+sprintf("Numero di nazioni nel dataset: %s", length(unique(n3)))
+```
+* Quanti voli internazionali?
+Sono stati registrati 711.780 voli internazionali, il 30.7% del totale.
+```{r echo=FALSE}
+internazionali=df_flights_airports%>%filter(country_origin!=country_dest)
+sprintf("Numero di voli internazionali registrati: %s", nrow(internazionali))
+```
+* Tra i voli internazionali, quanti sono anche intercontinentali?
+176.150 voli sono intercontinentali (il 24% dei voli internazionali e il 7.6% dei voli totali).
+```{r echo=FALSE}
+intercontinentali=df_flights_airports%>%filter(continent_origin!=continent_dest)
+sprintf("Numero di voli intercontinentali registrati: %s", nrow(intercontinentali))
+```
+
+* Quanti voli nazionali?
+Sono stati registrati 1.603.544, ovvero il 69.3% del totale.
+```{r echo=FALSE}
+nazionali=df_flights_airports%>%filter(country_origin==country_dest)
+sprintf("Numero di voli nazionali registrati: %s", nrow(nazionali))
+```
+
+## Distribuzione dei voli
+
+È interessante capire quali sono le nazioni con più voli in partenza e in arrivo e quelle con meno voli in partenza e in arrivo. 
+
+* Da quali nazioni partono più voli?
+
+```{r include=FALSE}
+airports_origin=df_flights_airports%>%group_by(country_origin)%>%count(totale_voli=n())%>%select(country_origin, n)%>%rename("totale_voli"="n")%>%arrange(-totale_voli)
+#View(airports_origin)
+#Nazione con più voli in partenza : US (stati uniti) con 1380418 in partenza
+#airports_origin[which.max(airports_origin$totale_voli), ]
+head=head(airports_origin)
+name=c("USA", "Germania", "Australia", "Canada", "Gran Bretagna", "India")
+head=cbind(head, nazione=name)
+```
+
+
+
+```{r echo=FALSE}
+#Aeroporti in US
+df_US=df_flights_airports%>%filter(country_origin=="US")
+u1=unique(df_US$origin)
+df_US=df_flights_airports%>%filter(country_dest=="US")
+u2=unique(df_US$destination)
+#length(u1)#1765 aeroporti di partenza
+#length(u2)#3585 aeroporti di arrivo
+aUSA=union(u1,u2)
+#length(aUSA)# in USA ci sono 3909 aeroporti
+
+
+#Aeroporti in Germania
+df_DE=df_flights_airports%>%filter(country_origin=="DE")
+d1=unique(df_DE$origin)
+df_DE=df_flights_airports%>%filter(country_dest=="DE")
+d2=unique(df_DE$destination)
+#length(d1)#38 aeroporti di partenza
+#length(d2)#66 aeroporti di arrivo
+aDE=union(d1,d2)
+#length(d3)# in Germania ci sono 69 aeroporti
+
+#Aeroporti in AU
+df_AU=df_flights_airports%>%filter(country_origin=="AU")
+au1=unique(df_AU$origin)
+df_AU=df_flights_airports%>%filter(country_dest=="AU")
+au2=unique(df_AU$destination)
+#length(au1)#40 aeroporti di partenza
+#length(au2)#85 aeroporti di arrivo
+aAU=union(au1,au2)
+#length(au3)# in Australia ci sono 88 aeroporti
+
+#Aeroporti in CA
+df_CA=df_flights_airports%>%filter(country_origin=="CA")
+c1=unique(df_CA$origin)
+df_CA=df_flights_airports%>%filter(country_dest=="CA")
+c2=unique(df_CA$destination)
+#length(c1)#68 aeroporti di partenza
+#length(c2)#133 aeroporti di arrivo
+aCA=union(c1,c2)
+#length(c3)# in Canada ci sono 141 aeroporti
+
+#Aeroporti in GB
+df_GB=df_flights_airports%>%filter(country_origin=="GB")
+g1=unique(df_GB$origin)
+df_GB=df_flights_airports%>%filter(country_dest=="GB")
+g2=unique(df_GB$destination)
+#length(g1)#44 aeroporti di partenza
+#length(g2)#57 aeroporti di arrivo
+aGB=union(g1,g2)
+#length(g3)# in Inghilterra ci sono 63 aeroporti
+
+#Aeroporti in IN
+df_IN=df_flights_airports%>%filter(country_origin=="IN")
+i1=unique(df_IN$origin)
+df_IN=df_flights_airports%>%filter(country_dest=="IN")
+i2=unique(df_IN$destination)
+#length(i1)#22 aeroporti di partenza
+#length(i2)#41 aeroporti di arrivo
+aIN=union(i1,i2)
+#length(i3)# in India ci sono 41 aeroporti
+
+totAer=c(length(aUSA),length(aDE),length(aAU), length(aCA),length(aGB), length(aIN))
+headpr=cbind(head, n_aeroporti=totAer)
+headpr
+```
+
+* Da quali nazioni partono meno voli?
+```{r echo=FALSE}
+airports_origin=df_flights_airports%>%group_by(country_origin)%>%count(totale_voli=n())%>%select(country_origin, n)%>%rename("totale_voli"="n")%>%arrange(-totale_voli)
+#airports_origin[which.min(airports_origin$totale_voli), ]
+tail=tail(airports_origin)
+name=c("Mali", "Azerbaigian", "Guatemala", "Mauritania", "Cipro", "Uruguai")
+tail=cbind(tail, nazione=name)
+
+#Aeroporti in ML
+df_ML=df_flights_airports%>%filter(country_origin=="ML")
+m1=unique(df_ML$origin)
+df_ML=df_flights_airports%>%filter(country_dest=="ML")
+m2=unique(df_ML$destination)
+#length(m1)#1 aeroporti di partenza
+#length(m2)#1 aeroporti di arrivo
+m3=union(m1,m2)
+#length(m3)# in Mali c'è 1 aeroporto
+
+#Aeroporti in AZ
+df_AZ=df_flights_airports%>%filter(country_origin=="AZ")
+az1=unique(df_AZ$origin)
+df_AZ=df_flights_airports%>%filter(country_dest=="AZ")
+az2=unique(df_AZ$destination)
+#length(az1)#1 aeroporti di partenza
+#length(az2)#1 aeroporti di arrivo
+az3=union(az1,az2)
+#length(az3)# in Azerbaigian c'è 1 aeroporto
+
+#Aeroporti in GT
+df_GT=df_flights_airports%>%filter(country_origin=="GT")
+gt1=unique(df_GT$origin)
+df_GT=df_flights_airports%>%filter(country_dest=="GT")
+gt2=unique(df_GT$destination)
+#length(gt1)#1 aeroporti di partenza
+#length(gt2)#1 aeroporti di arrivo
+gt3=union(gt1,gt2)
+#length(gt3)# in Guatemala c'è 1 aeroporto
+
+#Aeroporti in MR
+df_MR=df_flights_airports%>%filter(country_origin=="MR")
+mr1=unique(df_MR$origin)
+df_MR=df_flights_airports%>%filter(country_dest=="MR")
+mr2=unique(df_MR$destination)
+#length(mr1)#1 aeroporti di partenza
+#length(mr2)#1 aeroporti di arrivo
+mr3=union(mr1,mr2)
+#length(mr3)# in Mauritania c'è 1 aeroporto
+
+#Aeroporti in CY
+df_CY=df_flights_airports%>%filter(country_origin=="CY")
+cy1=unique(df_CY$origin)
+df_CY=df_flights_airports%>%filter(country_dest=="CY")
+cy2=unique(df_CY$destination)
+#length(cy1)#2 aeroporti di partenza
+#length(cy2)#2 aeroporti di arrivo
+cy3=union(cy1,cy2)
+#length(cy3)# in Cipro ci sono 2 aeroporti
+
+#Aeroporti in UY
+df_UY=df_flights_airports%>%filter(country_origin=="UY")
+uy1=unique(df_UY$origin)
+df_UY=df_flights_airports%>%filter(country_dest=="UY")
+uy2=unique(df_UY$destination)
+#length(uy1)#1 aeroporti di partenza
+#length(uy2)#0 aeroporti di arrivo
+uy3=union(uy1,uy2)
+#length(uy3)# in Uruguai c'è 1 aeroporto
+
+totAer2=c(length(m3),length(az3),length(gt3), length(mr3),length(cy3), length(uy3))
+tail=cbind(tail, n_aeroporti=totAer2)
+tail
+
+
+
+
+
+```
+* Quali sono le nazioni con più voli in arrivo?
+
+```{r echo=FALSE}
+#analizzo i voli in arrivo
+airports_dest=df_flights_airports%>%group_by(country_dest)%>%count(totale_voli=n())%>%select(country_dest, n)%>%rename("totale_voli"="n")%>%arrange(-totale_voli)
+#View(airports_dest)
+#Nazione con più voli in arrivo :  US con   1380459 in arrivo
+#airports_dest[which.max(airports_dest$totale_voli), ]
+headarrivo=head(airports_dest)
+name=c("USA", "Germania", "Australia", "Canada", "Gran Bretagna", "India")
+headarrivo=cbind(headarrivo, nazione=name)
+headarrivo=cbind(headarrivo, n_aeroporti=totAer)
+headarrivo
+```
+
+* Quali sono le nazioni con meno voli in arrivo?
+
+```{r echo=FALSE}
+#Nazione con meno voli in arrivo:  egitto con 1 volo in arrivo
+#airports_dest[which.min(airports_dest$tot_voli), ]
+tailarrivo=tail(airports_dest)
+name=c( "Azerbaigian", "Mauritania", "Kuwait", "Oman", "Egitto", "Siria")
+tailarrivo=cbind(tailarrivo, nazione=name)
+
+
+#Aeroporti in KW
+df_KW=df_flights_airports%>%filter(country_origin=="KW")
+kw1=unique(df_KW$origin)
+df_KW=df_flights_airports%>%filter(country_dest=="KW")
+kw2=unique(df_KW$destination)
+#length(kw1)#0 aeroporti di partenza
+#length(kw2)#1 aeroporti di arrivo
+kw3=union(kw1,kw2)
+#length(kw3)# in Uruguay c'è 1 aeroporto
+
+#Aeroporti in OM
+df_OM=df_flights_airports%>%filter(country_origin=="OM")
+om1=unique(df_OM$origin)
+df_OM=df_flights_airports%>%filter(country_dest=="OM")
+om2=unique(df_OM$destination)
+#length(om1)#0 aeroporti di partenza
+#length(om2)#1 aeroporti di arrivo
+om3=union(om1,om2)
+#length(om3)# in Oman c'è 1 aeroporto
+
+#Aeroporti in EG
+df_EG=df_flights_airports%>%filter(country_origin=="EG")
+eg1=unique(df_EG$origin)
+df_EG=df_flights_airports%>%filter(country_dest=="EG")
+eg2=unique(df_EG$destination)
+#length(eg1)#0 aeroporti di partenza
+#length(eg2)#1 aeroporti di arrivo
+eg3=union(eg1,eg2)
+#length(eg3)# in Egitto c'è 1 aeroporto
+
+#Aeroporti in SY
+df_SY=df_flights_airports%>%filter(country_origin=="SY")
+sy1=unique(df_SY$origin)
+df_SY=df_flights_airports%>%filter(country_dest=="SY")
+sy2=unique(df_SY$destination)
+#length(sy1)#0 aeroporti di partenza
+#length(sy2)#1 aeroporti di arrivo
+sy3=union(sy1,sy2)
+#length(sy3)# in Siria c'è 1 aeroporto
+
+totArrivo=c(length(az3),length(mr3),length(kw3), length(om3),length(eg3), length(sy3))
+tailarrivo=cbind(tailarrivo, n_aeroporti=totArrivo)
+tailarrivo
+
+```
+* Come sono distribuiti i voli in partenza in base al continente?
+
+```{r include=FALSE}
+#COME SONO DISTRIBUTI I VOLI IN PARTENZA IN BASE AL CONTINENTE?
+conteggio_partenze=df_flights_airports%>%group_by(continent_origin)%>%count()%>%rename(continent=continent_origin)# AF:8470, AS: 236690, EU:494966, NA:1462519, OC:85195, SA:  27484
+prop=percent(conteggio_partenze$n/sum(conteggio_partenze$n))
+cbind(conteggio_partenze, prop)
+pielabels_partenze <- sprintf("%s = %3.1f%s", conteggio_partenze$continent,
+                     100*conteggio_partenze$n/sum(conteggio_partenze$n), "%")
+
+#altro grafico per la distribuzione dei voli in partenza in base al continente
+```
+
+```{r include=FALSE}
+lista_conteggio_partenze=c("AF"=8470, "AS"= 236690,"EU"=494966,"NA"=1462519,"OC"=85195,"SA"=27484)
+waffle(lista_conteggio_partenze/8470, rows=17,size=2,colors=c("#44D2AC", "#E48B8B", "#B67093",  "#3A9ABD", "#CFE252","#800000"),  
+       title="Distribuzione dei voli in partenza in base ai continenti",  
+       xlab="1 quadrato = 8470 voli")
+
+
+```
+
+```{r include=FALSE}
+con=c("Africa", "Asia", "Europa","Nord America", "Oceania", "Sud America")
+conteggio_partenze=conteggio_partenze%>%cbind(continente=con)
+```
+
+```{r include=FALSE}
+# Add a column with the text you want to display for each bubble:
+conteggio_partenze$text <- paste( conteggio_partenze$n,"voli in partenza da",conteggio_partenze$continente)
+
+# Generate the layout
+packing <- circleProgressiveLayout(conteggio_partenze$n, sizetype='area')
+conteggio_partenze <- cbind(conteggio_partenze, packing)
+d.gg <- circleLayoutVertices(packing, npoints=50)
+
+a<- ggplot() + 
+  geom_polygon_interactive(data = d.gg , aes(x, y, group = id, fill=id, tooltip = conteggio_partenze$text[id], data_id = id), colour = "black", alpha = 0.6) +
+  scale_fill_viridis() +
+  geom_text(data = conteggio_partenze, aes(x, y, label = gsub("Continent", "", continente)), size=2, color="black") +
+  ggtitle("Distribuzione dei voli in partenza in base ai continenti")+
+  theme_void() + 
+  theme(legend.position="none", plot.margin=unit(c(0,0,0,0),"cm") ) + 
+  coord_equal()
+```
+
+```{r echo=FALSE}
+widg <- ggiraph(ggobj = a, width_svg = 9, height_svg = 7)
+widg
+```
+
+* Come sono distribuiti i voli in arrivo in base al continente?
+
+```{r include=FALSE}
+
+#COME SONO DISTRIBUTI I VOLI IN ARRIVO IN BASE AL CONTINENTE
+conteggio_dest=df_flights_airports%>%group_by(continent_dest)%>%count()%>%rename(continent=continent_dest)# AF:6877, AS:234068, EU:498057, NA:1463970, OC:84983, SA: 27369
+prop=percent(conteggio_dest$n/sum(conteggio_dest$n))
+cbind(conteggio_dest, prop)
+pielabels_dest <- sprintf("%s = %3.1f%s", conteggio_dest$continent,
+                              100*conteggio_dest$n/sum(conteggio_dest$n), "%")
+
+```
+
+```{r include=FALSE}
+lista_conteggio_dest=c("AF"=6877, "AS"= 234068,"EU"=498057,"NA"=1463970,"OC"=84983,"SA"=27369)
+waffle(lista_conteggio_dest/6877, rows=17,size=2,colors=c("#44D2AC", "#E48B8B", "#B67093",  "#3A9ABD", "#CFE252","#800000"),  
+       title="Distribuzione dei voli in arrivo in base ai continenti",  
+       xlab="1 quadrato = 6877 voli")
+
+```
+
+```{r echo=FALSE}
+con=c("Africa", "Asia", "Europa","Nord America", "Oceania", "Sud America")
+conteggio_dest=conteggio_dest%>%cbind(continente=con)
+```
+
+```{r echo=FALSE}
+# Add a column with the text you want to display for each bubble:
+conteggio_dest$text <- paste(conteggio_dest$n, "voli in arrivo da",conteggio_dest$continente)
+
+# Generate the layout
+packing <- circleProgressiveLayout(conteggio_dest$n, sizetype='area')
+conteggio_dest <- cbind(conteggio_dest, packing)
+d.gg <- circleLayoutVertices(packing, npoints=50)
+
+a<- ggplot() + 
+  geom_polygon_interactive(data = d.gg , aes(x, y, group = id, fill=id, tooltip = conteggio_dest$text[id], data_id = id), colour = "black", alpha = 0.6) +
+  scale_fill_viridis() +
+  geom_text(data = conteggio_dest, aes(x, y, label = gsub("Continente", "", continente)), size=2, color="black") +
+  ggtitle("Distribuzione dei voli in arrivo in base ai continenti")+
+  theme_void() + 
+  theme(legend.position="none", plot.margin=unit(c(0,0,0,0),"cm") ) + 
+  coord_equal()
+```
+
+```{r echo=FALSE}
+widg <- ggiraph(ggobj = a, width_svg = 9, height_svg = 7)
+widg
+```
+
+
+## Distribuzione degli aeroporti
+
+Come sono distribuiti gli aeroporti nei continenti?
+
+La concentrazione maggiore si trova negli Stati Uniti (4096 aeroporti) e in Europa (699 aeroporti) mentre per il continente africano sono presenti solo 45 aeroporti.
+
+```{r include=FALSE}
+#creo una lista di aeroporti-continente
+a_origin=df_flights_airports%>%select(origin, continent_origin)%>%rename("airport"="origin", "continent"="continent_origin")
+a_unique=unique(a_origin)
+#View(a_unique)
+b_dest=df_flights_airports%>%select(destination, continent_dest)%>%rename("airport"="destination", "continent"="continent_dest")
+b_unique=unique(b_dest)
+#View(b_unique)
+list_airport=unique(rbind(a_unique, b_unique))#dataframe in cui per ogni aeroporto viene indicato il continente di appartenenza
+list_airport=data.frame(list_airport)
+#View(list_airport)
+```
+
+```{r include=FALSE}
+# COME SONO DISTRIBUTI GLI AEROPORTI?
+conteggio=list_airport%>%group_by(continent)%>%count()
+# AF:45, AS: 246, EU:699, NA:4096, OC:115, SA:131
+prop=percent(conteggio$n/sum(conteggio$n))
+cbind(conteggio, prop)
+pielabels <- sprintf("%s = %3.1f%s", conteggio$continent,
+                     100*conteggio$n/sum(conteggio$n), "%")
+
+lista_aeroporti=c("Africa"=45, "Asia"= 246,"Europa"=699,"NordAmerica"=4096,"Oceania"=115,"SudAmerica"=131)
+```
+
+```{r include=FALSE}
+waffle(lista_aeroporti/45, rows=10,size=2,colors=c("#44D2AC", "#E48B8B", "#B67093",  "#3A9ABD", "#CFE252","#800000"),  
+       title="Distribuzione degli aeroporti nei continenti",  
+       xlab="1 quadrato = 45 aeroporti")
+```
+
+```{r include=FALSE}
+df_lista_aeroporti <- data.frame(t(sapply(lista_aeroporti,c)))
+df_lista_aeroporti<-pivot_longer(df_lista_aeroporti,c("Africa", "Asia","Europa","NordAmerica","Oceania","SudAmerica") , names_to = "continent", values_to = "n_airports")
+
+```
+
+```{r include=FALSE}
+# Add a column with the text you want to display for each bubble:
+df_lista_aeroporti$text <- paste(df_lista_aeroporti$n_airports,"aeroporti in",df_lista_aeroporti$continent)
+
+# Generate the layout
+packing <- circleProgressiveLayout(df_lista_aeroporti$n_airports, sizetype='area')
+df_lista_aeroporti <- cbind(df_lista_aeroporti, packing)
+d.gg <- circleLayoutVertices(packing, npoints=50)
+
+a<- ggplot() + 
+  geom_polygon_interactive(data = d.gg , aes(x, y, group = id, fill=id, tooltip = df_lista_aeroporti$text[id], data_id = id), colour = "black", alpha = 0.6) +
+  scale_fill_viridis() +
+  geom_text(data = df_lista_aeroporti, aes(x, y, label = gsub("Continent", "", continent)), size=2, color="black") +
+  ggtitle("Distribuzione degli aeroporti nei continenti")+
+  theme_void() + 
+  theme(legend.position="none", plot.margin=unit(c(0,0,0,0),"cm") ) + 
+  coord_equal()
+```
+
+```{r echo=FALSE}
+widg <- ggiraph(ggobj = a, width_svg = 9, height_svg = 7)
+widg
+```
+
+Grazie alla mappa interattiva è possibile vedere la disposizione degli aeroporti nel globo e, come già emerso, la concentrazione maggiore è negli Stati Uniti (in particolare nella East Coast) e in Europa. Il continente asiatico e quello africano presentano pochi aeroporti, probabilmente questo è dovuto al fatto che non vengono registrati molti voli da e verso gli aeroporti di quei continenti dalla piattaforma OpenSky Network.
+```{r echo=FALSE} 
+df_flights_airports_coordSep=df_flights_airports%>%separate(coordinates_origin, into=c("lat_origin","lon_origin"),sep=",")%>% separate(coordinates_dest, into=c("lat_dest","lon_dest"),sep=",")
+
+
+#Devo estrarre una lista con tutti gli aeroporti presenti nel dataset che saranno i nodi della rete
+aeroporti=sort(unique(c(df_flights_airports$destination, df_flights_airports$origin)))#lista aeroporti
+#length(aeroporti) #5330 aeroporti
+
+#creo un dataframe con tutti gli aeroporti e le loro coordinate, ogni riga è un nodo
+origine=df_flights_airports_coordSep%>%select(origin, lat_origin, lon_origin,country_origin)%>%rename("lat"="lat_origin","lon"="lon_origin", "aeroporto"="origin","country"="country_origin")
+destinazione=df_flights_airports_coordSep%>%select(destination, lat_dest, lon_dest,country_dest)%>%rename("lat"="lat_dest","lon"="lon_dest", "aeroporto"="destination", "country"="country_dest")
+nodi=unique(rbind(origine, destinazione))
+aeroporti=data.frame(nodi)
+
+
+mytext <- paste(
+  "Name: ", aeroporti$aeroporto, "<br/>", 
+  "Nation: ", aeroporti$country) %>%
+  lapply(htmltools::HTML)
+
+# Background 2: World Imagery
+m <- leaflet(aeroporti) %>% 
+  addTiles("Aeroporti") %>% 
+  setView( lng = 2.34, lat = 48.85, zoom = 3 )%>% 
+  addCircleMarkers(~as.numeric(lat), ~as.numeric(lon), 
+                   fillColor = "brown", fillOpacity = 0.2, color="white", radius=3, stroke=FALSE,
+                   label = mytext,
+                   labelOptions = labelOptions( style = list("font-weight" = "normal", padding = "3px 8px"), textsize = "13px", direction = "auto"))%>%
+addProviderTiles("Esri.WorldImagery")
+m 
+
+```
+
+
+## Voli giornalieri
+
+* Quanti voli giornalieri sono avvenuti nel periodo gennaio-febbraio-marzo 2020?
+
+Dall'analisi del grafico si nota che da inizio marzo c'è stata una drastica diminuzione dei voli a livello globale. Questo calo corrisponde all'entrata in vigore delle misure restrittive che hanno imposto la riduzione (o il blocco totale) dei voli.
+```{r echo=FALSE}
+voli_in_giorno=df_flights_airports%>%group_by(day)%>%count(cn=n())%>%select(day, n)%>%rename("voli_giornalieri"="n")
+# Then you can create the xts necessary to use dygraph
+don <- xts(x = voli_in_giorno$voli_giornalieri, order.by = voli_in_giorno$day)
+ # Finally the plot
+p <- dygraph(don, main = "Voli giornalieri") %>%
+  dyOptions(labelsUTC = TRUE, fillGraph=TRUE, fillAlpha=0.1, drawGrid = FALSE, colors="#D8AE5A") %>%
+  dyRangeSelector() %>%
+  dyCrosshair(direction = "vertical") %>%
+  dyHighlight(highlightCircleSize = 5, highlightSeriesBackgroundAlpha = 0.2, hideOnMouseOut = FALSE)  %>%
+  dyRoller(rollPeriod = 1)
+p
+```
+
+L'organizzazione mondiale della sanità (WHO) l'11 marzo dichiara la pandemia.
+```{r echo=FALSE}
+
+#grafico interattivo
+grafico1<-ggplot(data=voli_in_giorno, aes(day, voli_giornalieri))+
+  geom_line(col="blue")+
+  geom_vline(xintercept = as.numeric(as.POSIXct("2020-03-11")), col = "red")+
+  labs(
+    title="Numero totale di voli giornalieri",
+    subtitle="Periodo da gennaio ad aprile 2020"
+    )+
+  xlab("Giorni")+
+  ylab("Numero di voli")+
+  annotate("text", x =as.POSIXct("2020-03-11"),y=1, label ="WHO dichiara la pandemia", parse = FALSE,  size = 3)+
+  theme_ipsum()
+grafico_interattivo1<-ggplotly(grafico1)
+grafico_interattivo1
+```
+
+
+
+* Un valore anomalo si verifica il 18/01/2020 in cui si nota una diminuzione significativa dei voli (19.193 voli rispetto ai 30.150 del giorno prima). Non è chiaro cosa abbia causato questa diminuzione ma potrebbe essere una conseguenza dell'attività di pulizia del dataset.
+
+* Qual è il giorno con più voli?
+
+Il 14 febbraio sono stati effettuati 31.459 voli, in questo periodo i paesi occidentali non avevano ancora adottato misure di lockdown.
+```{r echo=FALSE}
+
+#Giorno con più voli: 2020-02-14 con 31459 voli
+voli_in_giorno[which.max(voli_in_giorno$voli_giornalieri), ]
+```
+* Qual è il giorno con meno voli? 
+
+Il 30 marzo è il giorno in cui si sono verificati meno voli (solo 9.209), in questa data gran parte dei paesi occidentali erano in lockdown.
+```{r echo=FALSE}
+#Giorno con meno voli: 2020-03-30 con 9209 voli
+voli_in_giorno[which.min(voli_in_giorno$voli_giornalieri), ]
+```
+## Voli giornalieri rispetto ai continenti
+
+* Come sono variati i voli continentali?
+
+In tutti i continenti si è verificata una diminuzione dei voli continentali giornalieri.
+
+```{r echo=FALSE}
+voli_in_continente_giorno=df_flights_airports%>%filter(continent_origin==continent_dest)%>%mutate(continent=continent_origin)%>%
+                           group_by(continent, day)%>%count(voli_giornalieri=n())%>%select(continent, day, n)%>%rename("voli_giornalieri"="n")%>%rename("continente"="continent")
+
+#un grafico per ogni continente
+grafico3<-ggplot(voli_in_continente_giorno,aes(day, voli_giornalieri,col=continente))+
+  geom_line()+
+  geom_vline(xintercept = as.numeric(as.POSIXct("2020-03-11")), col = "red")+
+  labs(
+    title="Numero di voli continentali giornalieri",
+    subtitle="Periodo da gennaio ad aprile 2020"
+  )+
+  xlab("Mesi")+
+  ylab("Numero di voli")+
+  annotate("text", x =as.POSIXct("2020-03-11"),y=1, label ="WHO dichiara la pandemia", parse = FALSE,  size = 2, )+
+  theme_ipsum()
+
+grafico_interattivo3<-ggplotly(grafico3)
+grafico_interattivo3
+
+```
+
+* Com'è variato il numero di voli intercontinentali rispetto al continente di partenza?
+
+```{r echo=FALSE}
+#Numero di voli giornalieri intercontinentali in base al continente
+voli_fuori_continente_giorno=df_flights_airports%>%filter(continent_origin!=continent_dest)%>%mutate(continent=continent_origin)%>%
+  group_by(continent, day)%>%count(voli_giornalieri=n())%>%select(continent, day, n)%>%rename("voli_giornalieri"="n")%>%rename("continente"="continent")
+
+grafico4<-ggplot(voli_fuori_continente_giorno,aes(day, voli_giornalieri,col=continente))+
+  geom_line()+
+  geom_vline(xintercept = as.numeric(as.POSIXct("2020-03-11")), col = "red")+
+  labs(
+    title="Numero di voli intercontinentali giornalieri",
+    subtitle="Periodo da gennaio ad aprile 2020"
+  )+
+  xlab("Giorni")+
+  ylab("Numero di voli")+
+  annotate("text", x =as.POSIXct("2020-03-11"),y=1, label ="WHO dichiara la pandemia", parse = FALSE,  size = 2, )+
+  theme_ipsum()
+
+grafico_interattivo4<-ggplotly(grafico4)
+grafico_interattivo4
+```
+
+## Nord America ed Europa
+
+* Variazione dei voli in partenza dal Nord America e in arrivo in Europa.
+```{r echo=FALSE}
+voli_us_eu=df_flights_airports%>%filter(continent_origin=="NA" & continent_dest=="EU")%>%group_by(day)%>%count(voli_giornalieri=n())%>%select(day, n)%>%rename("voli_giornalieri"="n")
+don <- xts(x = voli_us_eu$voli_giornalieri, order.by = voli_us_eu$day)
+ # Finally the plot
+p <- dygraph(don, main="Numero di voli giornalieri tra America e Europa") %>%
+  dyOptions(labelsUTC = TRUE, fillGraph=TRUE, fillAlpha=0.1, drawGrid = FALSE, colors="#D8AE5A") %>%
+  dyRangeSelector() %>%
+  dyCrosshair(direction = "vertical") %>%
+  dyHighlight(highlightCircleSize = 5, highlightSeriesBackgroundAlpha = 0.2, hideOnMouseOut = FALSE)  %>%
+  dyRoller(rollPeriod = 1)
+p
+
+```
+
+
+* Variazione dei voli in partenza dall'Europa verso il Nord America.
+```{r echo=FALSE}
+#VOLI TRA EUROPA E AMERICA
+
+voli_eu_us=df_flights_airports%>%filter(continent_origin=="EU" & continent_dest=="NA")%>%group_by(day)%>%count(voli_giornalieri=n())%>%select(day, n)%>%rename("voli_giornalieri"="n")
+don <- xts(x = voli_eu_us$voli_giornalieri, order.by = voli_eu_us$day)
+ # Finally the plot
+p <- dygraph(don, main="Numero di voli giornalieri tra Europa e Nord America") %>%
+  dyOptions(labelsUTC = TRUE, fillGraph=TRUE, fillAlpha=0.1, drawGrid = FALSE, colors="#D8AE5A") %>%
+  dyRangeSelector() %>%
+  dyCrosshair(direction = "vertical") %>%
+  dyHighlight(highlightCircleSize = 5, highlightSeriesBackgroundAlpha = 0.2, hideOnMouseOut = FALSE)  %>%
+  dyRoller(rollPeriod = 1)
+p
+
+```
+
+## America e Italia
+
+* Voli in partenza dall'Italia con destinazione Nord America. Il giorno con più voli su questa tratta è stato il 4 gennaio con 14 voli mentre dal 17 marzo a fine mese c'è stato solo un volo giornaliero.
+
+```{r echo=FALSE}
+#VOLI TRA ITALIA E AMERICA
+voli_it_us=df_flights_airports%>%filter(country_origin=="IT" & continent_dest=="NA")%>%group_by(day)%>%count(voli_giornalieri=n())%>%select(day, n)%>%rename("voli_giornalieri"="n")
+
+don <- xts(x = voli_it_us$voli_giornalieri, order.by = voli_it_us$day)
+ # Finally the plot
+p <- dygraph(don, main="Voli tra Italia e Nord America") %>%
+  dyOptions(labelsUTC = TRUE, fillGraph=TRUE, fillAlpha=0.1, drawGrid = FALSE, colors="#D8AE5A") %>%
+  dyRangeSelector() %>%
+  dyCrosshair(direction = "vertical") %>%
+  dyHighlight(highlightCircleSize = 5, highlightSeriesBackgroundAlpha = 0.2, hideOnMouseOut = FALSE)  %>%
+  dyRoller(rollPeriod = 1)
+p
+
+
+```
+
+
+* Voli in arrivo in Italia dal Nord America. Il giorno con più voli su questa tratta è stato il 5 gennaio con 13 voli mentre dal 12 marzo a fine mese c'è stato solo un volo giornaliero.
+
+```{r echo=FALSE}
+#VOLI TRA AMERICA E ITALIA
+
+voli_us_it=df_flights_airports%>%filter(continent_origin=="NA" & country_dest=="IT")%>%group_by(day)%>%count(voli_giornalieri=n())%>%select(day, n)%>%rename("voli_giornalieri"="n")
+don <- xts(x = voli_us_it$voli_giornalieri, order.by = voli_us_it$day)
+ # Finally the plot
+p <- dygraph(don, main="Voli tra Nord America e Italia") %>%
+  dyOptions(labelsUTC = TRUE, fillGraph=TRUE, fillAlpha=0.1, drawGrid = FALSE, colors="#D8AE5A") %>%
+  dyRangeSelector() %>%
+  dyCrosshair(direction = "vertical") %>%
+  dyHighlight(highlightCircleSize = 5, highlightSeriesBackgroundAlpha = 0.2, hideOnMouseOut = FALSE)  %>%
+  dyRoller(rollPeriod = 1)
+p
+
+```
+
+## Voli da e per l'Europa
+
+* Come sono diminuiti i voli in arrivo in Europa dagli altri continenti?
+
+```{r echo=FALSE}
+#VOLI IN ARRIVO IN EUROPA DAGLI ALTRI CONTINENTI
+voli_in_eu=df_flights_airports%>%filter(continent_dest=="EU")%>%group_by(day, continent_origin)%>%count(voli_giornalieri=n())%>%select(day,continent_origin, n)%>%rename("voli_giornalieri"="n")%>%rename("continente"="continent_origin")
+grafico5<-ggplot(data=voli_in_eu, aes(day, voli_giornalieri,col=continente))+
+  geom_line()+
+  labs(
+    title="Numero di voli giornalieri in arrivo in Europa",
+    subtitle="Periodo da gennaio ad aprile 2020"
+  )+
+  xlab("Giorni")+
+  ylab("Numero di voli")+
+  theme_ipsum()
+grafico_interattivo5<-ggplotly(grafico5)
+grafico_interattivo5
+
+```
+
+* Variazione dei voli in partenza dall'Europa verso gli altri continenti.
+
+```{r echo=FALSE}
+#VOLI IN PARTENZA DALL'EUROPA VERSO ALTRI CONTINENTI
+voli_out_eu=df_flights_airports%>%filter(continent_origin=="EU")%>%group_by(day, continent_dest)%>%count(voli_giornalieri=n())%>%select(day,continent_dest, n)%>%rename("voli_giornalieri"="n")%>%rename("continente"="continent_dest")
+
+g7<-ggplot(data=voli_out_eu, aes(day, voli_giornalieri,col=continente))+
+  geom_line()+
+  labs(
+    title="Numero di voli giornalieri in partenza dall'Europa",
+    subtitle="Periodo da gennaio ad aprile 2020 "
+  )+
+  xlab("Giorni")+
+  ylab("Numero di voli")+
+  theme_ipsum()
+
+grafico_interattivo7<-ggplotly(g7)
+grafico_interattivo7
+```
+
+##  Voli da e per il Nord America
+
+* Variazione del numero di voli in arrivo nel Nord America in base al continente di partenza.
+
+```{r echo=FALSE}
+#VOLI IN ARRIVO NEL NORD AMERICA DAGLI ALTRI CONTINENTI
+voli_in_na=df_flights_airports%>%filter(continent_dest=="NA")%>%group_by(day, continent_origin)%>%count(voli_giornalieri=n())%>%select(day,continent_origin, n)%>%rename("voli_giornalieri"="n")%>%rename("continente"="continent_origin")
+
+g8<-ggplot(data=voli_in_na, aes(day, voli_giornalieri,col=continente))+
+  geom_line()+
+  labs(
+    title="Numero di voli giornalieri in arrivo nel Nord America",
+    subtitle="Periodo da gennaio ad aprile 2020"
+  )+
+  xlab("Giorni")+
+  ylab("Numero di voli")+
+  theme_ipsum()
+
+grafico_interattivo8<-ggplotly(g8)
+grafico_interattivo8
+
+```
+* Numero di voli in partenza dal Nord America verso altri continenti.
+
+```{r echo=FALSE}
+#VOLI IN PARTENZA DAL NORD AMERICA VERSO ALTRI CONTINENTI
+voli_out_na=df_flights_airports%>%filter(continent_origin=="EU")%>%group_by(day, continent_dest)%>%count(voli_giornalieri=n())%>%select(day,continent_dest, n)%>%rename("voli_giornalieri"="n")%>%rename("continente"="continent_dest")
+
+g9<-ggplot(data=voli_out_na, aes(day, voli_giornalieri,col=continente))+
+  geom_line()+
+  labs(
+    title="Numero di voli giornalieri in partenza dal Nord America",
+    subtitle="Periodo da gennaio ad aprile 2020 "
+  )+
+  xlab("Giorni")+
+  ylab("Numero di voli")+
+  theme_ipsum()
+
+grafico_interattivo9<-ggplotly(g9)
+grafico_interattivo9
+```
+
+
+## Confronto con il 2019
+
+Per poter effettuare un confronto con i mesi di gennaio, febbraio, marzo 2019 e 2020 è stato creato un ulteriore dataset **df_flights_airports_2019** con le stesse procedure effettuate per la creazione del dataset per i voli del 2020. 
+
+Il grafico del 2019 ha in media un numero minore di voli giornalieri (probabilmente dovuto all'attività di raccolta di dati) ma l'andamento non evidenzia significative diminuzioni cosa che invece è evidente per il 2020.
+
+```{r include=FALSE}
+
+
+df_flights_airports_2019=read_csv("df_flights_airports_2019.csv")
+
+
+df_flights_airports_2019=df_flights_airports_2019%>%mutate(continent_origin=replace_na(continent_origin,"NA"))
+df_flights_airports_2019=df_flights_airports_2019%>%mutate(continent_dest=replace_na(continent_dest, "NA"))
+#View(df_flights_airports_2019)
+
+```
+
+```{r include=FALSE}
+voli_in_giorno_2019=df_flights_airports_2019%>% group_by(day)%>%count(voli_giornalieri_2019=n())%>%select(day, n)%>%rename("voli_giornalieri_2019"="n")%>%
+mutate(DayDate=day(day)) %>% mutate(MonthDate=month(day)) %>%unite(DayMonth, c("DayDate", "MonthDate"), sep = "-")%>%select(DayMonth, voli_giornalieri_2019)
+  
+voli_in_giorno_2020=df_flights_airports%>%group_by(day)%>%count(voli_giornalieri_2020=n())%>%select(day, n)%>%rename("voli_giornalieri_2020"="n")%>%mutate(DayDate=day(day)) %>% mutate(MonthDate=month(day)) %>%unite(DayMonth, c("DayDate", "MonthDate"), sep = "-")
+
+voli_uniti=voli_in_giorno_2019%>%inner_join(voli_in_giorno_2020, by="DayMonth")
+
+```
+
+```{r echo=FALSE}
+grafico5<-ggplot(voli_uniti)+
+  geom_line(aes(day.x, voli_giornalieri_2019),col="blue")+
+  geom_line(aes(day.x, voli_giornalieri_2020),col="red")+
+  labs(
+    title="Numero totale di voli giornalieri nel 2019 e nel 2020",
+    subtitle="Periodo da gennaio ad aprile"
+  )+
+  xlab("Giorni")+
+  ylab("Numero di voli")+
+  theme_ipsum()
+
+grafico_interattivo5<-ggplotly(grafico5)
+grafico_interattivo5
+
+```
+
+## Rete dei voli
+È possibile utilizzare le informazioni sui voli per creare un grafo diretto in cui i nodi sono gli aeroporti e gli archi sono i voli.
+Il grafo ottenuto ha 5.330 nodi (il numero degli aeroporti) e 2.315.324 archi (ovvero il numero di righe del dataset **df_flights_airports**).
+
+```{r include=FALSE}
+#write.csv(nodi, "nodi.csv")
+#creo gli archi
+edges = 
+  df_flights_airports_coordSep%>% 
+  mutate(from = match(df_flights_airports_coordSep$origin, nodi$aeroporto), 
+         to = match(df_flights_airports_coordSep$destination, nodi$aeroporto)) %>%
+  select(from, to, day)
+#write.csv(edges, "archi.csv")
+#RETE CON NODI GLI AEROPORTI E ARCHI I VOLI
+#Creo la rete con nodi gli aeroporti e archi i voli effettuati
+nodi=read.csv("nodi.csv")
+#nrow(nodi)
+edges=read.csv("archi.csv")
+#nrow(edges)
+flightNet = tbl_graph( nodi, edges, directed = TRUE)
+
+```
+
+Su questo grafo sono state calcolate tre misure di centralità dei nodi ovvero in degree, out degree e betweenness con lo scopo di individuare gli aeroporti più popolari e quelli più di transito.
+
+
+```{r include=FALSE}
+fligh_centrality=flightNet%>%
+  activate(nodes)%>%
+  mutate(
+      in_degree=centrality_degree(mode="in"),
+      out_degree=centrality_degree(mode="out"),)
+
+flightRank=as.list(fligh_centrality)$nodes%>%
+  select(aeroporto, in_degree,out_degree)
+
+flightRank
+```
+
+* Quali sono gli aeroporti più popolari per i voli in arrivo, ovvero con in degree maggiore? 
+Gli aeroporti più popolari si trovano tutti negli Stati Uniti.
+
+
+```{r echo=FALSE}
+rank_in=flightRank%>%arrange(-in_degree)%>%head(10)
+rank_in%>%left_join(icao_codes, by=c("aeroporto"="ident"))%>%select(aeroporto, in_degree,name,iso_country, municipality)
+
+```
+Analizzando la distribuzione degli in_degree si scopre che 62 aeroporti hanno un in degree superiore a 10.000 mentre i rimanenti 5.268 hanno un in_degree inferiore. Inoltre si nota che la distribuzione degli in_degree non segue precisamente una legge di potenza e che la rappresentazione migliore è con la distribuzione log-normale.
+```{r echo=FALSE}
+
+grafico1<-ggplot(flightRank,aes(x=log(in_degree))) +
+    geom_histogram( binwidth=1, fill="chocolate", color="chocolate", alpha=0.9) +
+    ggtitle("Distribuzione in_degree") +
+    theme_ipsum() +
+    ylab("frequenza")+
+    theme(
+      plot.title = element_text(size=15)
+    )
+grafico1
+
+```
+```{r echo=FALSE}
+#Continuous power law objects take vectors as inputs,
+m_bl = conpl$new(((flightRank%>%filter(in_degree>0))$in_degree))
+#estimate the lower-bound
+est = estimate_xmin(m_bl)
+#update the distribution object
+m_bl$setXmin(est)
+m_bl_ln = conlnorm$new(((flightRank%>%filter(in_degree>0))$in_degree))
+est = estimate_xmin(m_bl_ln)
+m_bl_ln$setXmin(est)
+plot(m_bl, xlab="In degree", ylab="CDF")
+lines(m_bl, col = 2, lwd = 2)
+lines(m_bl_ln, col = 3, lwd = 2)
+legend(3000, 1, legend=c("Power law", "log-normal"),
+       col=c("red", "green"), lty=1:1, cex=0.8)
+```
+
+* Quali sono gli aeroporti più popolari per i voli in partenza, ovvero con out degree maggiore?
+
+
+
+```{r echo=FALSE}
+
+rank_out=flightRank%>%arrange(-out_degree)%>%head(10)
+#trovo nomi e nazioni degli aeroporti
+rank_out%>%left_join(icao_codes, by=c("aeroporto"="ident"))%>%select(aeroporto, out_degree,name,iso_country, municipality)
+```
+Analizzando la distribuzione out_degree si scopre che 1.154 aeroporti hanno un out degree superiore a 10.000 e che la distribuzione non segue precisamente una legge di potenza e che la rappresentazione migliore è con la distribuzione log-normale.
+```{r echo=FALSE}
+p <-ggplot( flightRank,aes(x=log(out_degree))) +
+    geom_histogram( binwidth=2, fill="chocolate", color="chocolate", alpha=0.9) +
+    ggtitle("Distribuzione out_degree") +
+    theme_ipsum() +
+    ylab("frequenza")+
+    theme(
+      plot.title = element_text(size=15)
+    )
+p
+```
+
+```{r echo=FALSE}
+#Continuous power law objects take vectors as inputs,
+m_bl = conpl$new(((flightRank%>%filter(out_degree>0))$out_degree))
+#estimate the lower-bound
+est = estimate_xmin(m_bl)
+#update the distribution object
+m_bl$setXmin(est)
+m_bl_ln = conlnorm$new(((flightRank%>%filter(out_degree>0))$out_degree))
+est = estimate_xmin(m_bl_ln)
+m_bl_ln$setXmin(est)
+plot(m_bl, xlab="Out degree", ylab="CDF")
+lines(m_bl, col = 2, lwd = 2)
+lines(m_bl_ln, col = 3, lwd = 2)
+legend(3000, 1, legend=c("Power law", "log-normal"),
+       col=c("red", "green"), lty=1:1, cex=0.8)
+```
+
+I 4 aeroporti più popolari sia per in degree che per out degree sono: Chicago O'Hare International Airport, Hartsfield Jackson Atlanta International Airport, Los Angeles International Airport e Dallas Fort Worth International Airport. Questi aeroporti corrispondono agli [scali più trafficati](https://it.ripleybelieves.com/busiest-airports-in-united-states-by-passenger-traffic-7219) degli Stati Uniti.
+
+* Quali sono gli aeroporti più di transito? 
+```{r echo=FALSE}
+fligh_btw=flightNet%>%
+  activate(nodes)%>%
+  mutate(
+      btw=centrality_betweenness())
+
+fligthbtw=as.list(fligh_btw)$nodes
+
+#View(flightbtw)
+flightbtw=fligthbtw%>%left_join(icao_codes, by=c("aeroporto"="ident"))%>%select(aeroporto, btw,name,iso_country, municipality)
+flightbtw%>%arrange(-btw)%>%head(10)
+
+```
+
+```{r include=FALSE}
+xx=flightbtw%>%filter(btw>0)
+p <-ggplot( xx,aes(x=log(btw))) +
+    geom_histogram( binwidth=1, fill="#e9ecef", color="#404080", alpha=0.9) +
+    ggtitle("Distribuzione btw_degree") +
+    theme_ipsum() +
+    theme(
+      plot.title = element_text(size=15)
+    )
+p
+
+```
+I tre aeroporti più di transito corrispondono ai tre aeroporti più popolari. 
+
+## Variazione delle misure di centralità
+
+Come sono variate le misure di centralità di gennaio e di marzo, ovvero prima e dopo l'inizio della pandemia?
+Le misure di centralità fin'ora calcolate si basano su tutto il periodo gennaio-marzo 2020. 
+
+Calcolando le misure di centralità nei singoli mesi di gennaio e marzo è possibile osservare come queste siano cambiate (ovvero diminuite) con l'inizio della pandemia.
+
+```{r include=FALSE}
+#MISURA DELLA RETE CON SOLO I VOLI DI gennaio
+voli_gennaio=flightNet%>%
+  activate(edges)%>%
+  filter(month(day)==01)%>%
+  activate(nodes)%>%
+  mutate(
+    in_degree=centrality_degree(mode="in"),
+    out_degree=centrality_degree(mode="out"),
+    btw=centrality_betweenness())
+
+flightRank_gennaio=as.list(voli_gennaio)$nodes%>%
+  select(aeroporto, in_degree,out_degree, btw)
+
+voli_marzo=flightNet%>%
+  activate(edges)%>%
+  filter(month(day)==03)%>%
+  activate(nodes)%>%
+  mutate(
+    in_degree=centrality_degree(mode="in"),
+    out_degree=centrality_degree(mode="out"),
+    btw=centrality_betweenness())
+
+
+flightRank_marzo=as.list(voli_marzo)$nodes%>%
+  select(aeroporto, in_degree,out_degree, btw)
+```
+
+```{r include=FALSE}
+#QUALI SONO GLI AEROPORTI PIu POPOLARI OVVERO CON IN_DEGREE MAGGIORE?
+#sono quelli dove arrivano più voli
+rank_in_gen=flightRank_gennaio%>%arrange(-in_degree)
+#trovo nomi e nazioni degli aeroporti
+gennaio=rank_in_gen%>%left_join(icao_codes, by=c("aeroporto"="ident"))%>%select(aeroporto, in_degree,name,iso_country, municipality)
+gennaio%>%head(10)
+dfgennaio=gennaio%>%arrange(-in_degree)%>%select(aeroporto, name, municipality, in_degree)%>%rename("in_degreegennaio"="in_degree")
+```
+
+
+```{r include=FALSE}
+#QUALI SONO GLI AEROPORTI PIu POPOLARI OVVERO CON IN_DEGREE MAGGIORE?
+#sono quelli dove arrivano più voli
+rank_in_mar=flightRank_marzo%>%arrange(-in_degree)
+#trovo nomi e nazioni degli aeroporti
+marzo=rank_in_mar%>%left_join(icao_codes, by=c("aeroporto"="ident"))%>%select(aeroporto, in_degree,name,iso_country, municipality)
+marzo%>%head(10)
+dfmarzo=marzo%>%arrange(-in_degree)%>%select(aeroporto, in_degree)%>%rename("in_degreemarzo"="in_degree")
+```
+
+```{r include=FALSE}
+df_var=dfgennaio%>%full_join(dfmarzo)
+df_var
+```
+* Qual è la variazione percentuale di in_degree di ogni aeroporto? Quale aeroporto ha avuto la variazione maggiore?
+```{r echo=FALSE}
+df_var=df_var%>%filter(in_degreegennaio>0)%>%mutate(var=((in_degreemarzo-in_degreegennaio)/(in_degreegennaio))*100)%>%arrange(var)
+df_var
+```
+
+
+```{r include=FALSE}
+
+#QUALI SONO GLI AEROPORTI CON PIU VOLI IN PARTENZA?
+rank_out_gen=flightRank_gennaio%>%arrange(-out_degree)
+#trovo nomi e nazioni degli aeroporti
+gen_out=rank_out_gen%>%left_join(icao_codes, by=c("aeroporto"="ident"))%>%select(aeroporto, out_degree,name,iso_country, municipality)
+gen_out%>%head(10)
+dfgenout=gen_out%>%arrange(-out_degree)%>%select(aeroporto, name, municipality, out_degree)%>%rename("out_degreegennaio"="out_degree")
+```
+
+```{r include=FALSE}
+#* Gli aeroporti più popolari per i voli in partenza (out_degree) a marzo sono:
+#QUALI SONO GLI AEROPORTI CON più VOLI IN PARTENZA?
+rank_out_mar=flightRank_marzo%>%arrange(-out_degree)
+#trovo nomi e nazioni degli aeroporti
+dfmarout=rank_out_mar%>%left_join(icao_codes, by=c("aeroporto"="ident"))%>%select(aeroporto, out_degree,name,iso_country, municipality)
+dfmarout%>%head(10)
+df=dfmarout%>%arrange(-out_degree)%>%select(aeroporto, out_degree)%>%rename("out_degreemarzo"="out_degree")
+```
+* Qual è la variazione percentuale di out_degree di ogni aeroporto? Quale aeroporto ha avuto la variazione maggiore?
+```{r echo=FALSE}
+df_var=dfgenout%>%full_join(df, "aeroporto")
+df_var=df_var%>%filter(out_degreegennaio>0)%>%mutate(var=((out_degreemarzo-out_degreegennaio)/(out_degreegennaio))*100)%>%arrange(var)
+df_var
+```
+
+
+```{r include=FALSE}
+#* Gli aeroporti più di transito (betweenness centrality) a gennaio sono:
+rank_btw_gen=flightRank_gennaio%>%arrange(-btw)
+#trovo nomi e nazioni degli aeroporti
+rank_btw_gennaio=rank_btw_gen%>%left_join(icao_codes, by=c("aeroporto"="ident"))%>%select(aeroporto, btw,name,iso_country, municipality)
+rank_btw_gennaio%>%head(10)
+rankbtwgen=rank_btw_gennaio%>%arrange(-btw)%>%select(aeroporto, name, municipality, btw)%>%rename("btw_gennaio"="btw")
+
+```
+
+```{r include=FALSE}
+#* Gli aeroporti più di transito (betweenness centrality) a marzo sono:
+#QUALI SONO GLI AEROPORTI CHE SONO DI TRANSITO?
+rank_btw_mar=flightRank_marzo%>%arrange(-btw)
+#trovo nomi e nazioni degli aeroporti
+df1=rank_btw_mar%>%left_join(icao_codes, by=c("aeroporto"="ident"))%>%select(aeroporto, btw,name,iso_country, municipality)
+df1%>%head(10)
+rankbtwmarzo=df1%>%arrange(-btw)%>%select(aeroporto,btw)%>%rename("btw_marzo"="btw")
+```
+* Qual è la variazione percentuale di betweenness centrality di ogni aeroporto? Quale aeroporto ha avuto la variazione maggiore?
+```{r echo=FALSE}
+df_var=rankbtwgen%>%full_join(rankbtwmarzo,"aeroporto")
+df_var=df_var%>%filter(btw_gennaio>0)%>%mutate(var=((btw_marzo-btw_gennaio)/(btw_gennaio))*100)%>%arrange(var)%>%filter(!is.na(municipality))
+df_var%>%head(4)
+```
+## Visualizzazioni dei voli
+
+È possibile visualizzare la mappa dei voli nei tre mesi di gennaio, febbraio e marzo 2020. Per una migliore visualizzazione della mappa è stata considerata la rete in cui ogni nodo è un aeroporto e c'è un arco tra due aeroporti se c'è stato almeno un volo ma non sono ripetuti archi se ci sono stati più voli tra due nodi.
+```{r include=FALSE}
+df=df_flights_airports_coordSep%>%group_by(origin,destination)%>%mutate(count=n())
+df=df%>%distinct(origin,destination,.keep_all = TRUE)
+df=df%>%ungroup()
+```
+
+```{r echo=FALSE}
+map(database = "world", fill=TRUE,col='#f2f2f2',lwd=0.08)
+for (i in (1:dim(df)[1])) { 
+  
+  inter <- gcIntermediate(c(as.numeric(df$lat_origin[i]),as.numeric(df$lon_origin[i])),c(as.numeric(df$lat_dest[i]),as.numeric(df$lon_dest[i])),n=200)
+  
+  lines(inter, lwd=0.015, col="lightpink1")    
+}
+```
+
+* Come cambia la mappa dei voli tra gennaio e marzo 2020?
+
+Mappa gennaio 2020:
+```{r echo=FALSE}
+df_1gen=df%>%filter(month(day)==01)
+map(database = "world", fill=TRUE,col='#f2f2f2',lwd=0.08)
+for (i in (1:dim(df_1gen)[1])) { 
+  
+  inter <- gcIntermediate(c(as.numeric(df_1gen$lat_origin[i]),as.numeric(df_1gen$lon_origin[i])),c(as.numeric(df_1gen$lat_dest[i]),as.numeric(df_1gen$lon_dest[i])),n=200)
+  
+  lines(inter, lwd=0.015, col="lightpink1")    
+}
+```
+
+Mappa marzo 2020:
+```{r echo=FALSE}
+df_1mar=df%>%filter(month(day)==03)
+map(database = "world", fill=TRUE,col='#f2f2f2',lwd=0.08)
+for (i in (1:dim(df_1mar)[1])) { 
+  
+  inter <- gcIntermediate(c(as.numeric(df_1mar$lat_origin[i]),as.numeric(df_1mar$lon_origin[i])),c(as.numeric(df_1mar$lat_dest[i]),as.numeric(df_1mar$lon_dest[i])),n=200)
+  
+  lines(inter, lwd=0.015, col="lightpink1")    
+}
+```
+
+Visualizzazione della mappa dei voli tra Nord America e Europa in due date stabilite: 7 gennaio (prima dell'inizio della pandemia) e 25 marzo (durante la pandemia).
+
+* Voli tra Nord America ed Europa del 7 gennaio.
+```{r echo=FALSE}
+#Mappa dei voli in due date stabilite: 7 gennaio (prima inizio della pandemia) e 25 marzo (durante pandemia)
+
+#Mappa per i voli del 7 gennaio solo nei continenti nord america ed europa
+df_us_gen=df%>%
+  filter(continent_origin=="NA" | continent_origin=="EU")%>%
+  filter(continent_dest=="NA" | continent_dest=="EU")%>%
+  filter(month(day)==01 & day(day)==07)
+
+#View(df_us_gen)
+map(database = "world", fill=TRUE,col='#f2f2f2',lwd=0.08)
+for (i in (1:dim(df_us_gen)[1])) { 
+  
+  inter <- gcIntermediate(c(as.numeric(df_us_gen$lat_origin[i]),as.numeric(df_us_gen$lon_origin[i])),c(as.numeric(df_us_gen$lat_dest[i]),as.numeric(df_us_gen$lon_dest[i])),n=200)
+  
+  lines(inter, lwd=0.1, col="slateblue")    
+}
+
+```
+* Voli tra Nord America ed Europa del 25 marzo.
+```{r echo=FALSE}
+df_us_mar=df%>%
+  filter(continent_origin=="NA" | continent_origin=="EU")%>%
+  filter(continent_dest=="NA" | continent_dest=="EU")%>%
+  filter(month(day)==03 & day(day)==25)
+
+#View(df_us_mar)
+map(database = "world", fill=TRUE,col='#f2f2f2',lwd=0.08)
+for (i in (1:dim(df_us_mar)[1])) { 
+  
+  inter <- gcIntermediate(c(as.numeric(df_us_mar$lat_origin[i]),as.numeric(df_us_mar$lon_origin[i])),c(as.numeric(df_us_mar$lat_dest[i]),as.numeric(df_us_mar$lon_dest[i])),n=200)
+  
+  lines(inter, lwd=0.1, col="slateblue")    
+}
+```
+Ripetiamo la stessa analisi considerando solo i voli nazionali italiani.
+
+* Voli nazionali italiani del 7 gennaio.
+
+```{r echo=FALSE}
+#Mappa dei voli in due date stabilite in Italia (partenza e arrivo): 7 gennaio (prima inizio della pandemia) e 25 marzo (durante pandemia)
+
+#Mappa per i voli del 7 gennaio solo nei voli interni in ital?a
+df_it_gen=df_flights_airports_coordSep%>%
+  filter(country_dest=="IT" & country_origin=="IT")%>%
+  filter(month(day)==01 & day(day)==07)
+
+#View(df_it_gen)
+map(database = "world", region="IT", fill=TRUE,col='#f2f2f2',lwd=0.08)
+for (i in (1:dim(df_it_gen)[1])) { 
+  
+  inter <- gcIntermediate(c(as.numeric(df_it_gen$lat_origin[i]),as.numeric(df_it_gen$lon_origin[i])),c(as.numeric(df_it_gen$lat_dest[i]),as.numeric(df_it_gen$lon_dest[i])),n=200)
+  
+  lines(inter, lwd=0.1, col="turquoise2")    
+}
+```
+
+* Voli nazionali italiani del 25 marzo.
+
+```{r echo=FALSE}
+df_it_mar=df_flights_airports_coordSep%>%
+  filter(country_dest=="IT" & country_origin=="IT")%>%
+  filter(month(day)==03 & day(day)==25)
+
+#View(df_it_mar)
+map(database = "world", region="IT", fill=TRUE,col='#f2f2f2',lwd=0.08)
+for (i in (1:dim(df_it_mar)[1])) { 
+  
+  inter <- gcIntermediate(c(as.numeric(df_it_mar$lat_origin[i]),as.numeric(df_it_mar$lon_origin[i])),c(as.numeric(df_it_mar$lat_dest[i]),as.numeric(df_it_mar$lon_dest[i])),n=200)
+  
+  lines(inter, lwd=0.1, col="turquoise2")    
+}
+```
+
+## Componente gigante
+
+In questa rete di voli è presente una componente gigante, ovvero una componente connessa "gigante" formata da un insieme di aeroporti che sono connessi tra di loro da voli?
+```{r include=FALSE}
+rete=graph.data.frame(edges, directed=TRUE)
+```
+
+```{r include=FALSE}
+componenteGigante=giant_component_extract(rete, directed = TRUE, bipartite_proj = FALSE,num_proj = 1)
+
+```
+La componente gigante esiste ed è formata da 1.779.291 archi su 2.315.324 archi totali e da 4.077 aeroporti su 5.330 aeroporti presenti nel dataset (76.5% degli aeroporti).
+```{r include=FALSE}
+d=data.frame(componenteGigante[[2]])
+head(d)
+nrow(d)
+
+```
+
+```{r echo=FALSE}
+temp_nodi=nodi%>%mutate(X=as.character(X))
+#View(nodi)
+b=d%>%left_join(temp_nodi, by=c("X1"="X"))%>%rename("lat1"="lat", "lon1"="lon", "aeroporto1"="aeroporto")%>%select(X1, X2, lat1,lon1, aeroporto1)
+a=b%>%left_join(temp_nodi, by=c("X2"="X"))%>%rename("lat2"="lat", "lon2"="lon", "aeroporto2"="aeroporto")%>%select(aeroporto1,lat1,lon1,aeroporto2,lat2,lon2)
+head(a)
+```
+
+```{r include=FALSE}
+l1=(unique(a$aeroporto1))
+l2=(unique(a$aeroporto2))
+nodi_aeroporti=union(l1,l2)
+d=data.frame(nodi_aeroporti)
+```
+Considerando solo i voli di gennaio la componente gigante è di 33.300 archi (su 845.899) e 3.898 aeroporti.
+```{r include=FALSE}
+#com'è cambiata la componente gigante? gennaio e marzo
+voli_gennaio=df_flights_airports_coordSep%>%
+  filter(month(day)==01)
+
+edges_gennaio=voli_gennaio%>%
+  mutate(from = match(voli_gennaio$origin, nodi$aeroporto), 
+         to = match(voli_gennaio$destination, nodi$aeroporto)) %>%
+  select(from, to, day)
+
+rete_gennaio=graph.data.frame(edges_gennaio, directed=TRUE)
+componenteGigante=giant_component_extract(rete_gennaio, directed = TRUE, bipartite_proj = FALSE,num_proj = 1)
+d=data.frame(componenteGigante[[2]])
+head(d)
+nrow(d)
+
+
+temp_nodi=nodi%>%mutate(X=as.character(X))
+#View(nodi)
+b=d%>%left_join(temp_nodi, by=c("X1"="X"))%>%rename("lat1"="lat", "lon1"="lon", "aeroporto1"="aeroporto")%>%select(X1, X2, lat1,lon1, aeroporto1)
+a=b%>%left_join(temp_nodi, by=c("X2"="X"))%>%rename("lat2"="lat", "lon2"="lon", "aeroporto2"="aeroporto")%>%select(X1, X2, lat1,lon1, aeroporto1,lat2,lon2, aeroporto2)
+head(a)
+
+l1=(unique(a$aeroporto1))
+l2=(unique(a$aeroporto2))
+l3=union(l1,l2)
+length(unique(l3))
+```
+Considerando solo i voli di marzo la componente gigante è di 31.895 archi (su 647.463) e 3.769 aeroporti.
+```{r include=FALSE}
+#com'è cambiata la componente gigante? gennaio e marzo
+voli_marzo=df_flights_airports_coordSep%>%
+  filter(month(day)==03)
+
+edges_marzo=voli_marzo%>%
+  mutate(from = match(voli_marzo$origin, nodi$aeroporto), 
+         to = match(voli_marzo$destination, nodi$aeroporto)) %>%
+  select(from, to, day)
+
+rete_marzo=graph.data.frame(edges_marzo, directed=TRUE)
+componenteGigante=giant_component_extract(rete_marzo, directed = TRUE, bipartite_proj = FALSE,num_proj = 1)
+d=data.frame(componenteGigante[[2]])
+head(d)
+nrow(d)
+
+
+temp_nodi=nodi%>%mutate(X=as.character(X))
+#View(nodi)
+b=d%>%left_join(temp_nodi, by=c("X1"="X"))%>%rename("lat1"="lat", "lon1"="lon", "aeroporto1"="aeroporto")%>%select(X1, X2, lat1,lon1, aeroporto1)
+a=b%>%left_join(temp_nodi, by=c("X2"="X"))%>%rename("lat2"="lat", "lon2"="lon", "aeroporto2"="aeroporto")%>%select(X1, X2, lat1,lon1, aeroporto1,lat2,lon2, aeroporto2)
+head(a)
+
+l1=(unique(a$aeroporto1))
+l2=(unique(a$aeroporto2))
+l3=union(l1,l2)
+length(unique(l3))
+```
+
+## Ricerca di comunità
+
+È possibile individuare delle comunità in questa rete di voli, ovvero insiemi di aeroporti che sono densamente connessi tra di loro e poco connessi con aeroporti di altre comunità? 
+
+Per la ricerca di comunità sono stati applicati diversi algoritmi ed è stato scelto, per le analisi successive, quello con una modularità maggiore.
+
+```{r include=FALSE}
+voli_gennaio=df_flights_airports_coordSep%>%
+  filter(month(day)==01)
+
+edges_gennaio=voli_gennaio%>%
+  mutate(from = match(voli_gennaio$origin, nodi$aeroporto), 
+         to = match(voli_gennaio$destination, nodi$aeroporto)) %>%
+  select(from, to, day)
+rete_gennaio1=graph.data.frame(edges_gennaio, directed=FALSE)
+
+```
+* Considerando solo i voli del mese di gennaio il risultato migliore si ottiene con l'algoritmo **cluster_louvain ** con una modularità di 0.53 e 18 comunità individuate.
+
+```{r echo=FALSE}
+#modularity(cluster_infomap(rete_gennaio1))# 0.02507714
+#modularity(cluster_walktrap(rete_gennaio1))#0.5018569
+#modularity(cluster_spinglass(rete_gennaio1))#non funziona per grafi non connessi
+#modularity(cluster_louvain(rete_gennaio1))#0.533712
+#modularity(cluster_fast_greedy(rete_gennaio1))#non lavora su multigrafi
+#modularity(cluster_label_prop(rete_gennaio1))#0.4820556
+
+data.frame(algoritmo=c("cluster_infomap","cluster_walktrap","cluster_louvain", "cluster_label_prop"),modularità=c("0.02","0.50", "0.53", "0.48"))
+
+```
+```{r include=FALSE}
+imc_gennaio=cluster_louvain(rete_gennaio1)
+modularity(imc_gennaio)
+```
+
+```{r include=FALSE}
+length(imc_gennaio)
+```
+
+La comunità più grande è formata da 2.290 nodi.
+
+```{r echo=FALSE}
+sizes(imc_gennaio)
+```
+
+
+```{r include=FALSE}
+#Comunità 3 ha una dimensione di 2290
+m=membership(imc_gennaio)[membership(imc_gennaio)==3]
+m
+#comunità 5 è la seconda più grande con 676 nodi
+c2=membership(imc_gennaio)[membership(imc_gennaio)==5]
+#teeza comunità con più nodi è la 4 con 566
+c3=membership(imc_gennaio)[membership(imc_gennaio)==4]
+```
+
+Visualizzazione delle tre comunità più grandi nella rete dei voli di gennaio (pre-covid). 
+
+Come si può notare ci sono due comunità incentrate negli USA: in turchese la comunità più grande con 2.290 nodi e in rosa la seconda comunità più grande formata da 676 nodi. Una terza comunità con 566 nodi e rappresentata dal colore corallo è centrata in Europa.
+```{r echo=FALSE}
+nodi_com=communities(imc_gennaio)$'3'
+df_gen=data.frame(n=as.numeric(nodi_com))
+
+
+df_gen1=left_join(df_gen, nodi, by=c("n"="X"))%>%select(n,aeroporto, lat,lon, country)
+
+df_gen2=df_flights_airports_coordSep%>%
+  filter(origin==df_gen1$aeroporto | destination==df_gen1$aeroporto)%>%
+  filter(month(day)==01)
+
+nodi_com5=communities(imc_gennaio)$'5'
+df_gen5=data.frame(n=as.numeric(nodi_com5))
+
+
+df_gen51=left_join(df_gen5, nodi, by=c("n"="X"))%>%select(n,aeroporto, lat,lon, country)
+
+df_gen52=df_flights_airports_coordSep%>%
+  filter(origin==df_gen51$aeroporto | destination==df_gen51$aeroporto)%>%
+  filter(month(day)==01)
+
+nodi_com4=communities(imc_gennaio)$'4'
+df_gen4=data.frame(n=as.numeric(nodi_com4))
+
+
+df_gen41=left_join(df_gen4, nodi, by=c("n"="X"))%>%select(n,aeroporto, lat,lon, country)
+
+df_gen42=df_flights_airports_coordSep%>%
+  filter(origin==df_gen41$aeroporto | destination==df_gen41$aeroporto)%>%
+  filter(month(day)==01)
+
+map(database = "world", fill=TRUE,col='#f2f2f2',lwd=0.08)
+for (i in (1:dim(df_gen2)[1])) { 
+  
+  inter <- gcIntermediate(c(as.numeric(df_gen2$lat_origin[i]),as.numeric(df_gen2$lon_origin[i])),c(as.numeric(df_gen2$lat_dest[i]),as.numeric(df_gen2$lon_dest[i])),n=200)
+  
+  lines(inter, lwd=0.1, col="turquoise2")    
+}
+
+for (i in (1:dim(df_gen52)[1])) { 
+  
+  inter <- gcIntermediate(c(as.numeric(df_gen52$lat_origin[i]),as.numeric(df_gen52$lon_origin[i])),c(as.numeric(df_gen52$lat_dest[i]),as.numeric(df_gen52$lon_dest[i])),n=200)
+  
+  lines(inter, lwd=0.1, col="pink")    
+}
+
+for (i in (1:dim(df_gen42)[1])) { 
+  
+  inter <- gcIntermediate(c(as.numeric(df_gen42$lat_origin[i]),as.numeric(df_gen42$lon_origin[i])),c(as.numeric(df_gen42$lat_dest[i]),as.numeric(df_gen42$lon_dest[i])),n=200)
+  
+  lines(inter, lwd=0.1, col="coral")    
+}
+
+
+
+```
+
+* Considerando solo i voli del mese di marzo il risultato migliore si ottiene con l'algoritmo **cluster_louvain ** con una modularità di 0.47 e 17 comunità individuate.
+
+```{r include=FALSE}
+#Comunità nella rete di marzo, 248 comunità, 0.02857183 di modularity
+voli_marzo=df_flights_airports_coordSep%>%
+  filter(month(day)==03)
+
+edges_marzo=voli_marzo%>%
+  mutate(from = match(voli_marzo$origin, nodi$aeroporto), 
+         to = match(voli_marzo$destination, nodi$aeroporto)) %>%
+  select(from, to, day)
+rete_marzo1=graph.data.frame(edges_marzo, directed=FALSE)
+
+```
+
+```{r echo=FALSE}
+#modularity(cluster_walktrap(rete_marzo1))#0.4241365
+#modularity(cluster_spinglass(rete_marzo1))#non funziona per grafi non connessi->INDAGARE CONNETTIVITA'
+#modularity(cluster_louvain(rete_marzo1))#0.4797099
+#modularity(cluster_fast_greedy(rete_marzo1))#non lavora su multigrafi
+#modularity(cluster_label_prop(rete_marzo1))#0.4135937
+
+data.frame(algoritmo=c("cluster_infomap","cluster_walktrap","cluster_louvain", "cluster_label_prop"),modularità=c("0.02","0.42", "0.47", "0.41"))
+```
+
+```{r include=FALSE}
+imc_marzo<-cluster_louvain(rete_marzo1)
+length(imc_marzo)
+```
+
+Delle 17 comunità individuate la più grande è formata da 2.201 nodi.
+```{r echo=FALSE}
+sizes(imc_marzo)
+```
+
+```{r include=FALSE}
+#comunità 2 è formata da 2201 nodi ed è la più grande
+m=membership(imc_marzo)[membership(imc_marzo)==2]
+cm2=membership(imc_marzo)[membership(imc_marzo)==3]#comunità 3 con 615 nodi
+cm3=membership(imc_marzo)[membership(imc_marzo)==7]#comunità 7 con 578 nodi
+```
+
+Visualizzazione delle tre comunità più grandi nella rete dei voli di marzo (durante il lockdown).
+
+Come si può notare ci sono due comunità incentrate negli USA: in turchese la comunità più grande con 2.201 nodi e in rosa la seconda comunità più grande formata da 615 nodi. Una terza comunità con 578 nodi e rappresentata dal colore corallo è centrata in Europa.
+```{r echo=FALSE}
+nodi_com2=communities(imc_marzo)$'2'
+df_m=data.frame(n=as.numeric(nodi_com2))
+
+df_mar1=inner_join(df_m, nodi, by=c("n"="X"))%>%select(n,aeroporto, lat,lon, country)
+
+df_mar2=df_flights_airports_coordSep%>%
+  filter(origin==df_mar1$aeroporto | destination==df_mar1$aeroporto)%>%
+  filter(month(day)==03)
+
+nodi_com3=communities(imc_marzo)$'3'
+df_m3=data.frame(n=as.numeric(nodi_com3))
+
+df_mar13=inner_join(df_m3, nodi, by=c("n"="X"))%>%select(n,aeroporto, lat,lon, country)
+
+df_mar23=df_flights_airports_coordSep%>%
+  filter(origin==df_mar13$aeroporto | destination==df_mar13$aeroporto)%>%
+  filter(month(day)==03)
+
+
+nodi_com7=communities(imc_marzo)$'7'
+df_m7=data.frame(n=as.numeric(nodi_com7))
+
+df_mar17=inner_join(df_m7, nodi, by=c("n"="X"))%>%select(n,aeroporto, lat,lon, country)
+
+df_mar27=df_flights_airports_coordSep%>%
+  filter(origin==df_mar17$aeroporto | destination==df_mar17$aeroporto)%>%
+  filter(month(day)==03)
+
+
+map(database = "world", fill=TRUE,col='#f2f2f2',lwd=0.08)
+for (i in (1:dim(df_mar2)[1])) { 
+  
+  inter <- gcIntermediate(c(as.numeric(df_mar2$lat_origin[i]),as.numeric(df_mar2$lon_origin[i])),c(as.numeric(df_mar2$lat_dest[i]),as.numeric(df_mar2$lon_dest[i])),n=200)
+  
+  lines(inter, lwd=0.1, col="turquoise2")    
+}
+
+for (i in (1:dim(df_mar23)[1])) { 
+  
+  inter <- gcIntermediate(c(as.numeric(df_mar23$lat_origin[i]),as.numeric(df_mar23$lon_origin[i])),c(as.numeric(df_mar23$lat_dest[i]),as.numeric(df_mar23$lon_dest[i])),n=200)
+  
+  lines(inter, lwd=0.1, col="pink")    
+}
+
+for (i in (1:dim(df_mar27)[1])) { 
+  
+  inter <- gcIntermediate(c(as.numeric(df_mar27$lat_origin[i]),as.numeric(df_mar27$lon_origin[i])),c(as.numeric(df_mar27$lat_dest[i]),as.numeric(df_mar27$lon_dest[i])),n=200)
+  
+  lines(inter, lwd=0.1, col="coral")    
+}
+
+
+
+```
+
+* Considerando i voli di gennaio, febbraio e marzo la modularità maggiore si ottiene con **cluster_louvain** con un valore di 0.51.
+```{r include=FALSE}
+edges = 
+  df_flights_airports_coordSep%>% 
+  mutate(from = match(df_flights_airports_coordSep$origin, nodi$aeroporto), 
+         to = match(df_flights_airports_coordSep$destination, nodi$aeroporto)) %>%
+  select(from, to, day)
+rete=graph.data.frame(edges, directed=FALSE)
+is.connected(rete)
+```
+
+```{r echo=FALSE}
+#Comunità nella rete cosiderando i tre mesi di gennaio, febbraio e marzo 2020. Modularità:0.02958831, 246 comunità,
+
+#modularity(cluster_infomap(rete))#  0.01365924
+#modularity(cluster_walktrap(rete))#troppo tempo
+#modularity(cluster_spinglass(rete))#non funziona per grafi non connessi->INDAGARE CONNETTIVITA'
+#modularity(cluster_louvain(rete))# 0.51
+#modularity(cluster_fast_greedy(rete))#non lavora su multigrafi
+#modularity(cluster_label_prop(rete))#0.46
+
+data.frame(algoritmo=c("cluster_infomap","cluster_louvain", "cluster_label_prop"),modularità=c("0.01","0.51", "0.46"))
+```
+
+```{r include=FALSE}
+imc=cluster_louvain(rete)
+modularity(imc)
+```
+
+```{r include=FALSE}
+length(imc)
+```
+Tra le 15 comunità individuate la più grande è formata da 3.091 nodi.
+```{r echo=FALSE}
+sizes(imc)
+```
+
+```{r include=FALSE}
+m=membership(imc)[membership(imc)==3]#3091 nodi
+mr6=membership(imc)[membership(imc)==6]#984
+mr5=membership(imc)[membership(imc)==5]#797
+mr2=membership(imc)[membership(imc)==2]#187
+mr10=membership(imc)[membership(imc)==10]#120
+mr1=membership(imc)[membership(imc)==1]#113
+```
+Visualizzazione delle sei comunità più grandi nella rete.
+
+Dalla mappa si nota che sono presenti due comunità negli Stati Uniti, una comunità in Europa, una comunità in Oceania, una tra India e Cina e una in Sud America.
+```{r include=FALSE}
+nodi_com3=communities(imc)$'3'
+df_tot=data.frame(n=as.numeric(nodi_com3))
+
+df_tot1=inner_join(df_tot, nodi, by=c("n"="X"))%>%select(n,aeroporto, lat,lon, country)
+
+df_2=df_flights_airports_coordSep%>%
+  filter(origin==df_tot1$aeroporto | destination==df_tot1$aeroporto)
+
+
+nodi_com6tot=communities(imc)$'6'
+df_tot6=data.frame(n=as.numeric(nodi_com6tot))
+
+df_tot16=inner_join(df_tot6, nodi, by=c("n"="X"))%>%select(n,aeroporto, lat,lon, country)
+
+df_tot26=df_flights_airports_coordSep%>%
+  filter(origin==df_tot16$aeroporto | destination==df_tot16$aeroporto)
+
+nodi_com5tot=communities(imc)$'5'
+df_tot5=data.frame(n=as.numeric(nodi_com5tot))
+
+df_tot15=inner_join(df_tot5, nodi, by=c("n"="X"))%>%select(n,aeroporto, lat,lon, country)
+
+df_tot25=df_flights_airports_coordSep%>%
+  filter(origin==df_tot15$aeroporto | destination==df_tot15$aeroporto)
+
+nodi_com2tot=communities(imc)$'2'
+df_tot2=data.frame(n=as.numeric(nodi_com2tot))
+
+df_tot12=inner_join(df_tot2, nodi, by=c("n"="X"))%>%select(n,aeroporto, lat,lon, country)
+
+df_tot22=df_flights_airports_coordSep%>%
+  filter(origin==df_tot12$aeroporto | destination==df_tot12$aeroporto)
+
+
+nodi_com10tot=communities(imc)$'10'
+df_tot10=data.frame(n=as.numeric(nodi_com10tot))
+
+df_tot110=inner_join(df_tot10, nodi, by=c("n"="X"))%>%select(n,aeroporto, lat,lon, country)
+
+df_tot210=df_flights_airports_coordSep%>%
+  filter(origin==df_tot110$aeroporto | destination==df_tot110$aeroporto)
+
+
+
+nodi_com1tot=communities(imc)$'1'
+df_tot1=data.frame(n=as.numeric(nodi_com1tot))
+
+df_tot11=inner_join(df_tot1, nodi, by=c("n"="X"))%>%select(n,aeroporto, lat,lon, country)
+
+df_tot21=df_flights_airports_coordSep%>%
+  filter(origin==df_tot11$aeroporto | destination==df_tot11$aeroporto)
+
+
+
+
+```
+
+```{r echo=FALSE}
+map(database = "world", fill=TRUE,col='#f2f2f2',lwd=0.08)
+for (i in (1:dim(df_2)[1])) { 
+  
+  inter <- gcIntermediate(c(as.numeric(df_2$lat_origin[i]),as.numeric(df_2$lon_origin[i])),c(as.numeric(df_2$lat_dest[i]),as.numeric(df_2$lon_dest[i])),n=200)
+  
+  lines(inter, lwd=0.1, col="turquoise2")    
+}
+
+
+for (i in (1:dim(df_tot26)[1])) { 
+  
+  inter <- gcIntermediate(c(as.numeric(df_tot26$lat_origin[i]),as.numeric(df_tot26$lon_origin[i])),c(as.numeric(df_tot26$lat_dest[i]),as.numeric(df_tot26$lon_dest[i])),n=200)
+  
+  lines(inter, lwd=0.1, col="pink")    
+}
+
+
+for (i in (1:dim(df_tot25)[1])) { 
+  
+  inter <- gcIntermediate(c(as.numeric(df_tot25$lat_origin[i]),as.numeric(df_tot25$lon_origin[i])),c(as.numeric(df_tot25$lat_dest[i]),as.numeric(df_tot25$lon_dest[i])),n=200)
+  
+  lines(inter, lwd=0.1, col="coral")    
+}
+
+
+for (i in (1:dim(df_tot22)[1])) { 
+  
+  inter <- gcIntermediate(c(as.numeric(df_tot22$lat_origin[i]),as.numeric(df_tot22$lon_origin[i])),c(as.numeric(df_tot22$lat_dest[i]),as.numeric(df_tot22$lon_dest[i])),n=200)
+  
+  lines(inter, lwd=0.1, col="blueviolet")    
+}
+
+
+
+for (i in (1:dim(df_tot210)[1])) { 
+  
+  inter <- gcIntermediate(c(as.numeric(df_tot210$lat_origin[i]),as.numeric(df_tot210$lon_origin[i])),c(as.numeric(df_tot210$lat_dest[i]),as.numeric(df_tot210$lon_dest[i])),n=200)
+  
+  lines(inter, lwd=0.1, col="green")    
+}
+
+
+for (i in (1:dim(df_tot21)[1])) { 
+  
+  inter <- gcIntermediate(c(as.numeric(df_tot21$lat_origin[i]),as.numeric(df_tot21$lon_origin[i])),c(as.numeric(df_tot21$lat_dest[i]),as.numeric(df_tot21$lon_dest[i])),n=200)
+  
+  lines(inter, lwd=0.1, col="gold")    
+}
+
+
+
+
+```
+
+## Conclusioni
+
+* Il Covid-19 ha causato una riduzione dei voli a livello mondiale. A gennaio 2020 sono stati registrati 845.899 voli mentre a marzo 2020 i voli sono stati 647.463 con una riduzione del 23.5% rispetto a gennaio.
+* La pandemia ha avuto effetti sui voli in tutti i continenti a partire da marzo 2020.
+* Il dataset non comprendeva informazioni sui voli in Cina, sarebbe stato interessante eseguire la stessa analisi per i voli cinesi.
+* A causa del Covid-19 sono diminuite le centralità di grado e di betweenness degli aeroporti, ma gli aeroporti più popolari sono rimasti gli stessi.
+* Analizzando le comunità nella rete dei voli si delineano comunità che corrispondono ai continenti.
+
